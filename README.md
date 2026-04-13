@@ -21,22 +21,17 @@
 
 ```mermaid
 flowchart TD
-    A[Зелёный агент<br>MLE-bench] -->|A2A протокол| B[Gateway<br>маршрутизатор]
-    B -->|POST /.well-known/agent-card.json| C[Purple Agent<br>FastAPI сервер]
-    B -->|POST /| C
-    
-    C -->|запрос на генерацию кода| D[OpenRouter API<br>LLM (nvidia/nemotron...)]
+    A["Зелёный агент<br>MLE-bench"] -->|A2A| B[Gateway]
+    B -->|GET agent-card| C["Purple Agent<br>FastAPI сервер"]
+    B -->|POST task| C
+
+    C -->|запрос к LLM| D["OpenRouter API"]
     D -->|сгенерированный код| C
-    
-    C -->|выполнение кода| E[Изолированная среда<br>внутри контейнера]
+
+    C -->|выполнение кода| E["Изолированная среда<br>(контейнер)"]
     E -->|submission.csv| C
-    C -->|файл| B
-    B -->|результат| A
-    
-    subgraph "Ваш Purple Agent (контейнер)"
-        C
-        E
-    end
+    C -->|результат| B
+    B -->|оценка| A
 ```
 
 Агент построен на **A2A (Agent‑to‑Agent)** протоколе. Он принимает от зелёного агента архив с данными Kaggle, генерирует Python‑скрипт через LLM, выполняет его в безопасной песочнице и возвращает предсказания.
