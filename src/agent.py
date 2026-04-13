@@ -21,7 +21,7 @@ client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
 )
 
-MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+MODEL = "nvidia/nemotron-3-super-120b-a12b:free"  # замените на другую, если эта недоступна
 
 GENERATE_CODE_PROMPT = """## ROLE
 You are an expert ML engineer. Your task is to write a Python solution for a Kaggle-style competition.
@@ -84,28 +84,24 @@ Output ONLY the fixed raw Python code — no markdown fences, no explanation.
 class Agent:
     def __init__(self):
         self._workdir: Path | None = None
-        self._workdir_obj = None  # держим tempfile объект живым
+        self._workdir_obj = None
         self._instructions: str = ""
         self._deps_installed: bool = False
 
     async def run(self, message: Message, updater: TaskUpdater) -> None:
         text = get_message_text(message)
-
-        # Если green просит валидацию — обрабатываем отдельно
+        print(f"=== run() called, message text preview: {text[:200]}...")
         if "validate" in text.lower() and self._workdir:
             await self._handle_validation(message, updater)
             return
-
-        # Иначе — основной флоу: получить датасет и решить задачу
         await self._handle_main_task(message, updater)
 
     async def _handle_validation(self, message: Message, updater: TaskUpdater) -> None:
-        """Валидируем submission.csv который прислал green-агент."""
+        print("=== Validation branch")
         await updater.update_status(
             TaskState.working,
             new_agent_text_message("Validating submission..."),
         )
-
         submission_data = None
         for part in message.parts:
             if isinstance(part.root, FilePart):
@@ -113,30 +109,26 @@ class Agent:
                 if isinstance(file_data, FileWithBytes):
                     submission_data = base64.b64decode(file_data.bytes)
                     break
-
         if not submission_data:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(text="Error: No submission file provided"))],
                 name="validation_result",
             )
             return
-
-        # Сохраняем и проверяем базово
         val_path = self._workdir / "validate_input.csv"
         val_path.write_bytes(submission_data)
-
         try:
             df = pd.read_csv(val_path)
             result = f"Valid submission: {len(df)} rows, columns: {list(df.columns)}"
         except Exception as e:
             result = f"Invalid submission: {e}"
-
         await updater.add_artifact(
             parts=[Part(root=TextPart(text=result))],
             name="validation_result",
         )
 
     async def _handle_main_task(self, message: Message, updater: TaskUpdater) -> None:
+        print("=== _handle_main_task started")
         await updater.update_status(
             TaskState.working,
             new_agent_text_message("Received task, extracting data..."),
@@ -160,16 +152,24 @@ class Agent:
             )
             return
 
-        # Создаём постоянную tmpdir (живёт пока живёт агент)
         self._workdir_obj = tempfile.TemporaryDirectory()
         self._workdir = Path(self._workdir_obj.name)
         self._instructions = instructions
+        print(f"Created temporary workdir: {self._workdir}")
 
-        # Распаковываем
         try:
             with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
                 tar.extractall(self._workdir)
+            print(f"Extracted archive contents:")
+            for root, dirs, files in os.walk(self._workdir):
+                level = root.replace(str(self._workdir), '').count(os.sep)
+                indent = ' ' * 2 * level
+                print(f"{indent}{os.path.basename(root)}/")
+                subindent = ' ' * 2 * (level + 1)
+                for file in files:
+                    print(f"{subindent}{file}")
         except Exception as e:
+            print(f"Extraction error: {e}")
             await updater.update_status(
                 TaskState.failed,
                 new_agent_text_message(f"Failed to extract tar: {e}"),
@@ -179,6 +179,9 @@ class Agent:
         data_dir = self._workdir / "home" / "data"
         if not data_dir.exists():
             data_dir = self._workdir
+            print(f"data_dir not found at {self._workdir}/home/data, using {data_dir} instead")
+        else:
+            print(f"data_dir = {data_dir}")
 
         files_list = [
             str(f.relative_to(self._workdir))
@@ -187,25 +190,28 @@ class Agent:
             )
         ]
         files_info = "\n".join(files_list)
+        print(f"files_info:\n{files_info}")
 
         await updater.update_status(
             TaskState.working,
             new_agent_text_message(f"Files extracted:\n{files_info}\n\nGenerating solution..."),
         )
 
-        # Читаем превью данных
         description_info = self._read_first_file(data_dir, "description.md", 3000, "\nCOMPETITION DESCRIPTION:\n")
         sample_info = self._read_first_file(data_dir, "sample_submission*", 500, "\nSample submission:\n")
         train_info = self._read_first_file(data_dir, "train.csv", 1000, "\nTrain preview (first rows):\n")
 
-        # Генерируем код
+        print("Generating code...")
         code = await self._generate_code(files_info, sample_info, train_info, data_dir, description_info)
+        print(f"Generated code length: {len(code)}")
+        print("=== Generated code ===\n", code, "\n=== End generated code ===")
 
-        # Запускаем
         submission_bytes = await self._run_with_retry(code, updater)
         if submission_bytes is None:
+            print("_run_with_retry returned None, exiting")
             return
 
+        print("Solution generated successfully, sending artifact...")
         await updater.update_status(
             TaskState.working,
             new_agent_text_message("Solution done! Submitting..."),
@@ -221,6 +227,7 @@ class Agent:
             ))],
             name="submission",
         )
+        print("Artifact sent")
 
     @staticmethod
     def _read_first_file(directory: Path, pattern: str, limit: int, prefix: str = "") -> str:
@@ -247,20 +254,28 @@ class Agent:
             train_info=train_info,
             sample_info=sample_info,
         )
-        response = await client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=3000,
-        )
-        return self._strip_code_fences(response.choices[0].message.content)
+        print("Sending prompt to LLM...")
+        try:
+            response = await client.chat.completions.create(
+                model=MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=3000,
+            )
+            print("LLM response received")
+            return self._strip_code_fences(response.choices[0].message.content)
+        except Exception as e:
+            print(f"LLM error: {e}")
+            raise
 
     async def _run_code(self, code: str) -> subprocess.CompletedProcess:
         script_path = self._workdir / "solution.py"
         script_path.write_text(code)
+        print(f"Wrote solution.py to {script_path}")
 
         loop = asyncio.get_running_loop()
 
         if not self._deps_installed:
+            print("Installing dependencies (scikit-learn, pandas, numpy)...")
             await loop.run_in_executor(
                 None,
                 lambda: subprocess.run(
@@ -270,8 +285,10 @@ class Agent:
                 ),
             )
             self._deps_installed = True
+            print("Dependencies installed")
 
-        return await loop.run_in_executor(
+        print(f"Running solution.py in {self._workdir}")
+        result = await loop.run_in_executor(
             None,
             lambda: subprocess.run(
                 [sys.executable, str(script_path)],
@@ -281,15 +298,22 @@ class Agent:
                 env={**os.environ, "WORKDIR": str(self._workdir)},
             ),
         )
+        print(f"Run finished with returncode={result.returncode}")
+        if result.stdout:
+            print(f"stdout: {result.stdout[:500]}")
+        if result.stderr:
+            print(f"stderr: {result.stderr[:500]}")
+        return result
 
     async def _run_with_retry(self, code: str, updater: TaskUpdater) -> bytes | None:
         result = await self._run_code(code)
         submission_path = self._workdir / "submission.csv"
 
         if result.returncode == 0 and submission_path.exists():
+            print("First attempt succeeded, submission file found")
             return submission_path.read_bytes()
 
-        # Пробуем починить
+        print(f"First attempt failed: returncode={result.returncode}, exists={submission_path.exists()}")
         await updater.update_status(
             TaskState.working,
             new_agent_text_message("First attempt failed, fixing..."),
@@ -301,18 +325,22 @@ class Agent:
             code=code,
             workdir=self._workdir,
         )
+        print("Requesting LLM to fix the code...")
         fix_response = await client.chat.completions.create(
             model=MODEL,
             messages=[{"role": "user", "content": fix_prompt}],
             max_tokens=3000,
         )
         fixed_code = self._strip_code_fences(fix_response.choices[0].message.content)
+        print("Fixed code:\n", fixed_code)
 
         result2 = await self._run_code(fixed_code)
 
         if result2.returncode == 0 and submission_path.exists():
+            print("Second attempt succeeded")
             return submission_path.read_bytes()
 
+        print(f"Second attempt failed: returncode={result2.returncode}, exists={submission_path.exists()}")
         await updater.update_status(
             TaskState.failed,
             new_agent_text_message(f"Failed after retry.\nError: {result2.stderr[-1000:]}"),
