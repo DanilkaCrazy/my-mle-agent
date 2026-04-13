@@ -6,6 +6,11 @@
 
 **MLE‑bench Purple Agent** — это агент, решающий задачи машинного обучения в формате соревнований Kaggle. Он написан на Python, использует OpenRouter для доступа к LLM и полностью совместим с платформой [AgentBeats](https://agentbeats.dev). Агент автоматически генерирует код, обучает модели (LightGBM / XGBoost / scikit‑learn) и возвращает файл `submission.csv` для оценки зелёным агентом MLE‑bench.
 
+## Лидерборд: https://agentbeats.dev/DanilkaCrazy/my-mle-agent
+
+<img width="548" height="50" alt="Снимок экрана 2026-04-13 083319" src="https://github.com/user-attachments/assets/43e4eace-dcb9-4e46-bb9e-aabc3b507539" />
+
+
 ## 📋 Содержание
 
 - [Архитектура](#архитектура)
